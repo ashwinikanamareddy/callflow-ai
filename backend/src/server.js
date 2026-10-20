@@ -1,0 +1,22 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import { closeCall, createCall, getCall, getCallForAI, listCalls, saveStage, storageMode } from './store.js';
+import { llmConfigured, summariseCall } from './llm.js';
+
+const app=express();
+const port=Number(process.env.PORT||4000);
+const allowed=(process.env.CORS_ORIGIN||'http://localhost:5173').split(',').map(x=>x.trim()).filter(Boolean);
+app.use(helmet({crossOriginResourcePolicy:{policy:'cross-origin'}}));
+app.use(cors({origin(origin,callback){if(!origin||allowed.includes('*')||allowed.includes(origin))return callback(null,true);return callback(new Error('Origin not allowed by CORS'));}}));
+app.use(express.json({limit:'1mb'}));
+app.get('/health',(req,res)=>res.json({ok:true,service:'callflow-api',storage:storageMode,llmConfigured,now:new Date().toISOString()}));
+app.post('/api/calls',async(req,res,next)=>{try{const call=await createCall(req.body||{});res.status(201).json({call});}catch(e){next(e);}});
+app.get('/api/calls',async(req,res,next)=>{try{res.json({calls:await listCalls()});}catch(e){next(e);}});
+app.get('/api/calls/:id',async(req,res,next)=>{try{const call=await getCall(req.params.id);if(!call)return res.status(404).json({error:'Call not found'});res.json({call});}catch(e){next(e);}});
+app.post('/api/calls/:id/stages',async(req,res,next)=>{try{if(!req.body?.event)return res.status(400).json({error:'Select what happened at this stage.'});const result=await saveStage(req.params.id,req.body);if(!result)return res.status(404).json({error:'Call not found'});res.json(result);}catch(e){next(e);}});
+app.post('/api/calls/:id/close',async(req,res,next)=>{try{const call=await closeCall(req.params.id,req.body||{});if(!call)return res.status(404).json({error:'Call not found'});res.json({call});}catch(e){next(e);}});
+app.post('/api/ai/summarise',async(req,res,next)=>{try{const id=String(req.body?.call_id||'');if(!id)return res.status(400).json({error:'call_id is required'});const call=await getCallForAI(id);if(!call)return res.status(404).json({error:'Call not found'});const result=await summariseCall(call);res.json(result);}catch(e){next(e);}});
+app.use((err,req,res,next)=>{console.error('[api error]',err?.message||err);if(res.headersSent)return next(err);const status=Number(err?.status)||(/Origin not allowed/.test(err?.message||'')?403:500);res.status(status).json({error:status===500?'The server could not complete that request. Check backend logs and environment settings.':err.message||'Request failed'});});
+app.listen(port,'0.0.0.0',()=>console.log(`CallFlow API listening on ${port}; storage=${storageMode}; llm=${llmConfigured?'configured':'not configured'}`));
